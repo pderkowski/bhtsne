@@ -8,8 +8,15 @@
 #include <limits>
 #include <random>
 #include <cmath>
+#include <stdexcept>
 
 namespace vpt {
+
+typedef std::vector<double> Vector;
+typedef std::function<double(const Vector& v1, const Vector& v2)> Metric;
+typedef std::pair<std::vector<double>, std::vector<int>> DistancesIndices;
+typedef std::vector<DistancesIndices> BatchDistancesIndices;
+
 
 template<class InputIterator>
 double sum(InputIterator begin, InputIterator end) {
@@ -20,10 +27,10 @@ double sum(InputIterator begin, InputIterator end) {
     return result;
 }
 
-template<typename T>
+template<typename Container>
 struct EuclideanMetric {
-    double operator() (const T& v1, const T& v2) const {
-        std::vector<double> diffSquares(v1.size());
+    double operator() (const Container& v1, const Container& v2) const {
+        Vector diffSquares(v1.size());
         std::transform(v1.begin(), v1.end(), v2.begin(), diffSquares.begin(), [] (double lhs, double rhs) {
             return (lhs - rhs) * (lhs - rhs);
         });
@@ -32,43 +39,36 @@ struct EuclideanMetric {
     }
 };
 
-
-
-template<typename T, typename Metric>
-class Searcher;
-
-
-template<typename T = std::vector<double>>
-struct Result {
-    const T* item;
-    int index;
-    double dist;
-
-    const T& operator* () const {
-        return *item;
-    }
-
-    bool operator == (const Result<T>& other) const {
-        return *item == *(other.item)
-            && index == other.index
-            && dist == other.dist;
-    }
+class DimensionMismatch: public std::runtime_error {
+public:
+    DimensionMismatch(int expected, int got)
+    : std::runtime_error("Item dimension doesn't match: expected " + std::to_string(expected) + ", got " + std::to_string(got))
+    {}
 };
 
 
 
-template<typename T = std::vector<double>, typename Metric = EuclideanMetric<T>>
+class Searcher;
+
+
 class VpTree {
 public:
     template<typename InputIterator>
-    explicit VpTree(InputIterator start, InputIterator end, Metric metric = Metric());
+    explicit VpTree(InputIterator start, InputIterator end, Metric metric = EuclideanMetric<Vector>());
 
     template<typename Container>
-    explicit VpTree(const Container& container, Metric metric = Metric());
+    explicit VpTree(const Container& container, Metric metric = EuclideanMetric<Vector>());
+    explicit VpTree(std::initializer_list<Vector> list, Metric metric = EuclideanMetric<Vector>());
 
-    explicit VpTree(std::initializer_list<T> list, Metric metric = Metric());
+    DistancesIndices getNearestNeighbors(const Vector& target, int neighborsCount) const;
+    template<typename VectorLike>
+    DistancesIndices getNearestNeighbors(const VectorLike& target, int neighborsCount) const;
+    DistancesIndices getNearestNeighbors(std::initializer_list<double> target, int neighborsCount) const;
 
-    std::vector<Result<T>> getNearestNeighbors(const T& target, int neighborsCount) const;
+    template<typename Container>
+    BatchDistancesIndices getNearestNeighborsBatch(const Container& targets, int neighborsCount) const;
+    BatchDistancesIndices getNearestNeighborsBatch(std::initializer_list<Vector> targets, int neighborsCount) const;
+
     const Metric getDistance;
 
 private:
@@ -86,15 +86,18 @@ private:
     };
 
 private:
-    typedef std::pair<T, int> ItemType;
+    typedef std::pair<Vector, int> Item;
 
-    std::vector<ItemType> items_;
+    std::vector<Item> items_;
     std::vector<Node> nodes_;
 
     std::mt19937 rng_;
 
+    int dimension_;
+
+private:
     template<typename InputIterator>
-    std::vector<ItemType> makeItems(InputIterator start, InputIterator end);
+    std::vector<Item> makeItems(InputIterator start, InputIterator end);
 
     int makeTree(int lower, int upper);
     void selectRoot(int lower, int upper);
@@ -102,12 +105,41 @@ private:
     int makeNode(int item);
     Node root() const { return nodes_[0]; }
 
-    friend class Searcher<T, Metric>;
+    friend class Searcher;
 };
 
-template<typename T, typename Metric>
+class Searcher {
+private:
+    typedef typename VpTree::Node Node;
+
+public:
+    explicit Searcher(const VpTree* tree, const Vector& target, int neighborsCount);
+
+    std::pair<std::vector<double>, std::vector<int>> search();
+
+    struct HeapItem {
+        bool operator < (const HeapItem& other) const {
+            return dist < other.dist;
+        }
+
+        int item;
+        double dist;
+    };
+
+private:
+    void searchInNode(const Node& node);
+
+    const VpTree* tree_;
+    Vector target_;
+    int neighborsCount_;
+    double tau_;
+    std::priority_queue<HeapItem> heap_;
+};
+
+
+
 template<typename InputIterator>
-VpTree<T, Metric>::VpTree(InputIterator start, InputIterator end, Metric metric)
+VpTree::VpTree(InputIterator start, InputIterator end, Metric metric)
 : getDistance(metric), items_(makeItems(start, end)), nodes_(), rng_() {
     std::random_device rd;
     rng_.seed(rd());
@@ -115,19 +147,16 @@ VpTree<T, Metric>::VpTree(InputIterator start, InputIterator end, Metric metric)
     makeTree(0, items_.size());
 }
 
-template<typename T, typename Metric>
 template<typename Container>
-VpTree<T, Metric>::VpTree(const Container& container, Metric metric)
+VpTree::VpTree(const Container& container, Metric metric)
 : VpTree(container.begin(), container.end(), metric)
 { }
 
-template<typename T, typename Metric>
-VpTree<T, Metric>::VpTree(std::initializer_list<T> list, Metric metric)
+VpTree::VpTree(std::initializer_list<Vector> list, Metric metric)
 : VpTree(list.begin(), list.end(), metric)
 { }
 
-template<typename T, typename Metric>
-int VpTree<T, Metric>::makeTree(int lower, int upper) {
+int VpTree::makeTree(int lower, int upper) {
     if (lower >= upper) {
         return Node::Leaf;
     } else if (lower + 1 == upper) {
@@ -144,99 +173,100 @@ int VpTree<T, Metric>::makeTree(int lower, int upper) {
     }
 }
 
-template<typename T, typename Metric>
-void VpTree<T, Metric>::selectRoot(int lower, int upper) {
+void VpTree::selectRoot(int lower, int upper) {
     std::uniform_int_distribution<int> uni(lower, upper - 1);
     int root = uni(rng_);
     std::swap(items_[lower], items_[root]);
 }
 
-template<typename T, typename Metric>
-void VpTree<T, Metric>::partitionByDistance(int lower, int pos, int upper) {
+void VpTree::partitionByDistance(int lower, int pos, int upper) {
     std::nth_element(
         items_.begin() + lower + 1,
         items_.begin() + pos,
         items_.begin() + upper,
-        [lower, this] (const ItemType& i1, const ItemType& i2) {
+        [lower, this] (const Item& i1, const Item& i2) {
             return getDistance(items_[lower].first, i1.first) < getDistance(items_[lower].first, i2.first);
         });
 }
 
-template<typename T, typename Metric>
-int VpTree<T, Metric>::makeNode(int item) {
+int VpTree::makeNode(int item) {
     nodes_.push_back(Node(item));
     return nodes_.size() - 1;
 }
 
-template<typename T, typename Metric>
 template<typename InputIterator>
-std::vector<std::pair<T, int>> VpTree<T, Metric>::makeItems(InputIterator begin, InputIterator end) {
-    std::vector<std::pair<T, int>> res;
+std::vector<std::pair<Vector, int>> VpTree::makeItems(InputIterator begin, InputIterator end) {
+    if (begin != end) {
+        dimension_ = begin->size();
+    } else {
+        dimension_ = -1;
+    }
+
+    std::vector<Item> res;
     for (int i = 0; begin != end; ++begin, ++i) {
-        res.push_back(std::make_pair(*begin, i));
+        auto vec = Vector(begin->begin(), begin->end());
+        res.push_back(std::make_pair(vec, i));
+
+        auto lastDimension = res.back().first.size();
+        if (lastDimension != dimension_) {
+            throw DimensionMismatch(dimension_, lastDimension);
+        }
     }
     return res;
 }
 
-template<typename T, typename Metric>
-std::vector<Result<T>> VpTree<T, Metric>::getNearestNeighbors(const T& target, int neighborsCount) const {
-    Searcher<T, Metric> searcher(this, target, neighborsCount);
+template<typename VectorLike>
+DistancesIndices VpTree::getNearestNeighbors(const VectorLike& target, int neighborsCount) const {
+    return getNearestNeighbors(Vector(target.begin(), target.end()), neighborsCount);
+}
+
+DistancesIndices VpTree::getNearestNeighbors(std::initializer_list<double> target, int neighborsCount) const {
+    return getNearestNeighbors(Vector(target.begin(), target.end()), neighborsCount);
+}
+
+DistancesIndices VpTree::getNearestNeighbors(const Vector& target, int neighborsCount) const {
+    auto targetDimension = target.size();
+    if (targetDimension != dimension_) {
+        throw DimensionMismatch(dimension_, targetDimension);
+    }
+    Searcher searcher(this, target, neighborsCount);
     return searcher.search();
 }
 
+template<typename Container>
+BatchDistancesIndices VpTree::getNearestNeighborsBatch(const Container& targets, int neighborsCount) const {
+    BatchDistancesIndices batch(targets.size());
+#pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < targets.size(); ++i) {
+        batch[i] = getNearestNeighbors(targets[i], neighborsCount);
+    }
+    return batch;
+}
+
+BatchDistancesIndices VpTree::getNearestNeighborsBatch(std::initializer_list<Vector> targets, int neighborsCount) const {
+    return getNearestNeighborsBatch(std::vector<Vector>(targets.begin(), targets.end()), neighborsCount);
+}
 
 
-template<typename T, typename Metric>
-class Searcher {
-public:
-    explicit Searcher(const VpTree<T, Metric>* tree, const T& target, int neighborsCount);
-
-    std::vector<Result<T>> search();
-
-private:
-    typedef typename VpTree<T, Metric>::Node Node;
-
-    struct HeapItem {
-        bool operator < (const HeapItem& other) const {
-            return dist < other.dist;
-        }
-
-        int item;
-        double dist;
-    };
-
-private:
-    void searchInNode(const Node& node);
-
-    const VpTree<T, Metric>* tree_;
-    T target_;
-    int neighborsCount_;
-    double tau_;
-    std::priority_queue<HeapItem> heap_;
-};
-
-template<typename T, typename Metric>
-Searcher<T, Metric>::Searcher(const VpTree<T, Metric>* tree, const T& target, int neighborsCount)
+Searcher::Searcher(const VpTree* tree, const Vector& target, int neighborsCount)
 : tree_(tree), target_(target), neighborsCount_(neighborsCount), tau_(std::numeric_limits<double>::max()), heap_()
 { }
 
-template<typename T, typename Metric>
-std::vector<Result<T>> Searcher<T, Metric>::search() {
+DistancesIndices Searcher::search() {
     searchInNode(tree_->root());
 
-    std::vector<Result<T>> results;
+    DistancesIndices results;
     while(!heap_.empty()) {
-        auto item = heap_.top().item;
-        auto result = Result<T>{&(tree_->items_[item].first), tree_->items_[item].second, heap_.top().dist};
-        results.push_back(result);
+        results.first.push_back(heap_.top().dist);
+        results.second.push_back(tree_->items_[heap_.top().item].second);
         heap_.pop();
     }
-    std::reverse(results.begin(), results.end());
+    std::reverse(results.first.begin(), results.first.end());
+    std::reverse(results.second.begin(), results.second.end());
     return results;
 }
 
-template<typename T, typename Metric>
-void Searcher<T, Metric>::searchInNode(const Node& node) {
+void Searcher::searchInNode(const Node& node) {
     double dist = tree_->getDistance(tree_->items_[node.item].first, target_);
 
     if (dist < tau_) {
