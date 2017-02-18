@@ -1,5 +1,5 @@
 # vptree
-C++ Vantage Point Tree implementation
+C++ Vantage Point Tree implementation with Python bindings
 
 ## Vantage Point Tree
 
@@ -9,19 +9,30 @@ querying of nearest neighbors in high dimensional spaces.
 ## Implementation
 
 The code is based on a great tutorial: http://stevehanov.ca/blog/index.php?id=130
-The only significant difference is that a search routine can be performed in parallel.
+I modified it so that the search routine can be run in parallel.
+The C++ code is just a single header file. Optional Python bindings can be built.
 
 ## Requirements
 
 - C++11 compatible compiler
-- cmake (if you want to run tests)
 
-## Instalation
+Additionally, for building Python bindings and running tests:
+- cmake 2.8.12+
+- python (python-dev or python3-dev package on Debian/Ubuntu)
+- pip
 
-Just copy the header file (vptree.hpp).
+## Installation
 
-For tests:
+### C++
+Just copy the header file (vptree.hpp). Compile with C++11 or higher, preferably with -fopenmp flag for speedup.
 
+### Python
+```
+git clone --recursive https://github.com/piotder/vptree.git <your_local_path>
+pip install <your_local_path>
+```
+
+### Tests
 ```
 mkdir bin
 cd bin
@@ -32,6 +43,7 @@ make test
 
 ## Usage
 
+### C++
 ```c++
 auto points = std::vector<std::vector<double>>{
     {0, 0, 1},
@@ -41,29 +53,33 @@ auto points = std::vector<std::vector<double>>{
     {10, 0, 5}
 };
 
-vpt::VpTree<> t1(points); // create a tree
+vpt::VpTree t1(points); // create a tree
 
-std::vector<vpt::Result<>> results = t1.getNearestNeighbors({ 0, 0, 0 }, 3); // find 3 neighbors closest to the given point
+std::vector<double> distances;
+std::vector<int> indices;
+std::tie(distances, indices) = t1.getNearestNeighbors({ 0, 0, 0 }, 3); // find 3 neighbors closest to the given point
 
-// index is the position in the original (points) vector
-std::cout << results[0].index << "\n"; // prints 0
+std::cout << distances[0] << "\n"; // prints 0
+std::cout << indices[0] << "\n"; // prints 1
 
-// dist is the distance from the searched point
-std::cout << results[0].dist << "\n"; // prints 1
+auto batch = t1.getNearestNeighborsBatch({{0, 0, 0}, {1, 1, 1}, {0.5, 0.5, 0.5}}, 3); // split the work between threads
+batch[0].first == distances // true
+batch[0].second == indices // true
 
-// item holds the pointer to the point itself
-*(results[0].item) == points[0] // true
-*results[0] == points[0] // the same as above
 ```
+### Python
+```Python
+from vptree import VpTree
 
-By default VpTree uses `std::vector<double>` as a representation of multidimensional points, although other
-vector-like containers can be specified (for example `std::array`). Another default is the euclidean metric, this can be
-changed by giving the `vpt::VpTree` a second template argument. For example:
+points = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [1.5, 2.5, 3.5]
+] # can also be a numpy array
 
-```c++
-std::vector<std::array<double, 100>> points;
-// fill points
+tree = VpTree(points)
 
-vpt:VpTree<std::array<double, 100>, SomeOtherMetric> vpt(points);
+distances, indices = tree.getNearestNeighbors([0, 0, 0.5], 2)
+batch = tree.getNearestNeighborsBatch([[0, 0, 0.5], [1, 1, 1], [2, 2, 2]], 2) // split the work between threads
+(distances, indices) == batch[0] // True
 ```
-
