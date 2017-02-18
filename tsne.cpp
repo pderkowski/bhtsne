@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <cstring>
 #include <time.h>
+#include <utility>
 #include "sptree.h"
 #include "tsne.h"
 #include "vptree/vptree.hpp"
@@ -433,7 +434,7 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
     // Build ball tree on data set
     vector<std::vector<double>> obj_X(N, std::vector<double>());
     for(int n = 0; n < N; n++) obj_X[n].assign(X + n * D, X + (n + 1) * D);
-    vpt::VpTree<> tree(obj_X);
+    vpt::VpTree tree(obj_X);
 
     // Loop over all points to find nearest neighbors
     printf("Building tree...\n");
@@ -445,10 +446,8 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
 
         // Find nearest neighbors
         auto results = tree.getNearestNeighbors(obj_X[n], K + 1);
-        for (int i = 0; i < results.size(); ++i) {
-            indices[i] = results[i].index;
-            distances[i] = results[i].dist;
-        }
+        distances = results.first;
+        indices = results.second;
 
         // Initialize some variables for binary search
         bool found = false;
