@@ -38,10 +38,9 @@
 #include <stdio.h>
 #include <cstring>
 #include <time.h>
-#include "vptree.h"
 #include "sptree.h"
 #include "tsne.h"
-
+#include "vptree/vptree.hpp"
 
 using namespace std;
 
@@ -432,23 +431,24 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
     for(int n = 0; n < N; n++) row_P[n + 1] = row_P[n] + (unsigned int) K;
 
     // Build ball tree on data set
-    VpTree<DataPoint, euclidean_distance>* tree = new VpTree<DataPoint, euclidean_distance>();
-    vector<DataPoint> obj_X(N, DataPoint(D, -1, X));
-    for(int n = 0; n < N; n++) obj_X[n] = DataPoint(D, n, X + n * D);
-    tree->create(obj_X);
+    vector<std::vector<double>> obj_X(N, std::vector<double>());
+    for(int n = 0; n < N; n++) obj_X[n].assign(X + n * D, X + (n + 1) * D);
+    vpt::VpTree<> tree(obj_X);
 
     // Loop over all points to find nearest neighbors
     printf("Building tree...\n");
-    vector<DataPoint> indices;
-    vector<double> distances;
-    for(int n = 0; n < N; n++) {
 
+    vector<int> indices(K + 1);
+    vector<double> distances(K + 1);
+    for(int n = 0; n < N; n++) {
         if(n % 10000 == 0) printf(" - point %d of %d\n", n, N);
 
         // Find nearest neighbors
-        indices.clear();
-        distances.clear();
-        tree->search(obj_X[n], K + 1, &indices, &distances);
+        auto results = tree.getNearestNeighbors(obj_X[n], K + 1);
+        for (int i = 0; i < results.size(); ++i) {
+            indices[i] = results[i].index;
+            distances[i] = results[i].dist;
+        }
 
         // Initialize some variables for binary search
         bool found = false;
@@ -500,7 +500,7 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
         // Row-normalize current row of P and store in matrix
         for(unsigned int m = 0; m < K; m++) cur_P[m] /= sum_P;
         for(unsigned int m = 0; m < K; m++) {
-            col_P[row_P[n] + m] = (unsigned int) indices[m + 1].index();
+            col_P[row_P[n] + m] = (unsigned int) indices[m + 1];
             val_P[row_P[n] + m] = cur_P[m];
         }
     }
@@ -508,7 +508,6 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
     // Clean up memory
     obj_X.clear();
     free(cur_P);
-    delete tree;
 }
 
 
