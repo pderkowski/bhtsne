@@ -3,7 +3,7 @@ TSNESOURCES = sptree.cpp tsne.cpp
 TSNEOBJECTS = $(patsubst %.cpp, %.o, $(TSNESOURCES))
 
 CXX = g++
-CXXFLAGS = -O3 -std=c++11
+CXXFLAGS = -O3 -std=c++11 -fopenmp
 
 .PHONY: clean tsne
 .DEFAULT_GOAL := tsne

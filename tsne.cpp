@@ -151,12 +151,14 @@ void TSNE::run(double* X, int N, int D, double* Y, int no_dims, double perplexit
         else computeGradient(P, row_P, col_P, val_P, Y, N, no_dims, dY, theta);
 
         // Update gains
-        for(int i = 0; i < N * no_dims; i++) gains[i] = (sign(dY[i]) != sign(uY[i])) ? (gains[i] + .2) : (gains[i] * .8);
-        for(int i = 0; i < N * no_dims; i++) if(gains[i] < .01) gains[i] = .01;
-
         // Perform gradient update (with momentum and gains)
-        for(int i = 0; i < N * no_dims; i++) uY[i] = momentum * uY[i] - eta * gains[i] * dY[i];
-		for(int i = 0; i < N * no_dims; i++)  Y[i] = Y[i] + uY[i];
+#pragma omp parallel for schedule(static)
+        for(int i = 0; i < N * no_dims; i++) {
+            gains[i] = (sign(dY[i]) != sign(uY[i])) ? (gains[i] + .2) : (gains[i] * .8);
+            gains[i] = (gains[i] < .01) ? .01 : gains[i];
+            uY[i] = momentum * uY[i] - eta * gains[i] * dY[i];
+            Y[i] += uY[i];
+        }
 
         // Make solution zero-mean
 		zeroMean(Y, N, no_dims);
@@ -439,15 +441,14 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
     // Loop over all points to find nearest neighbors
     printf("Building tree...\n");
 
-    vector<int> indices(K + 1);
-    vector<double> distances(K + 1);
+    vector<vector<int>> indices;
+    vector<vector<double>> distances;
+
+    printf("Finding nearest neighbors...\n");
+    std::tie(distances, indices) = tree.getNearestNeighborsBatch(obj_X, K + 1);
+
     for(int n = 0; n < N; n++) {
         if(n % 10000 == 0) printf(" - point %d of %d\n", n, N);
-
-        // Find nearest neighbors
-        auto results = tree.getNearestNeighbors(obj_X[n], K + 1);
-        distances = results.first;
-        indices = results.second;
 
         // Initialize some variables for binary search
         bool found = false;
@@ -461,13 +462,13 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
         while(!found && iter < 200) {
 
             // Compute Gaussian kernel row
-            for(int m = 0; m < K; m++) cur_P[m] = exp(-beta * distances[m + 1] * distances[m + 1]);
+            for(int m = 0; m < K; m++) cur_P[m] = exp(-beta * distances[n][m + 1] * distances[n][m + 1]);
 
             // Compute entropy of current row
             sum_P = DBL_MIN;
             for(int m = 0; m < K; m++) sum_P += cur_P[m];
             double H = .0;
-            for(int m = 0; m < K; m++) H += beta * (distances[m + 1] * distances[m + 1] * cur_P[m]);
+            for(int m = 0; m < K; m++) H += beta * (distances[n][m + 1] * distances[n][m + 1] * cur_P[m]);
             H = (H / sum_P) + log(sum_P);
 
             // Evaluate whether the entropy is within the tolerance level
@@ -499,7 +500,7 @@ void TSNE::computeGaussianPerplexity(double* X, int N, int D, unsigned int** _ro
         // Row-normalize current row of P and store in matrix
         for(unsigned int m = 0; m < K; m++) cur_P[m] /= sum_P;
         for(unsigned int m = 0; m < K; m++) {
-            col_P[row_P[n] + m] = (unsigned int) indices[m + 1];
+            col_P[row_P[n] + m] = (unsigned int) indices[n][m + 1];
             val_P[row_P[n] + m] = cur_P[m];
         }
     }
@@ -623,24 +624,24 @@ void TSNE::zeroMean(double* X, int N, int D) {
 	// Compute data mean
 	double* mean = (double*) calloc(D, sizeof(double));
     if(mean == NULL) { printf("Memory allocation failed!\n"); exit(1); }
-    int nD = 0;
+
 	for(int n = 0; n < N; n++) {
+        const int nD = n * D;
 		for(int d = 0; d < D; d++) {
 			mean[d] += X[nD + d];
 		}
-        nD += D;
 	}
 	for(int d = 0; d < D; d++) {
 		mean[d] /= (double) N;
 	}
 
 	// Subtract data mean
-    nD = 0;
-	for(int n = 0; n < N; n++) {
+#pragma omp parallel for schedule(static)
+ 	for(int n = 0; n < N; n++) {
+        const int nD = n * D;
 		for(int d = 0; d < D; d++) {
 			X[nD + d] -= mean[d];
 		}
-        nD += D;
 	}
     free(mean); mean = NULL;
 }
