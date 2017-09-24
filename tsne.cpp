@@ -41,7 +41,7 @@
 #include <utility>
 #include "sptree.h"
 #include "tsne.h"
-#include "vptree/vptree.hpp"
+#include "vptree.hpp"
 
 using namespace std;
 
